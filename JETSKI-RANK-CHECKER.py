@@ -15,8 +15,15 @@ YOUR_IDS = [
     'ID2',
     'ID3',
     'ID4',
-    'ID5'
+    'ID5',
+    'ID6',
+    'ID7'
 ]
+
+# Add global variables for idle detection
+last_total_score = None
+last_score_change_time = None
+IDLE_THRESHOLD = 25 * 60  # 25 minutes in seconds
 
 def get_epoch_times():
     now = datetime.now(timezone.utc)
@@ -30,6 +37,23 @@ def get_epoch_times():
     
     return epoch_start, epoch_end
 
+def check_idle_status(current_total_score):
+    global last_total_score, last_score_change_time
+    current_time = time.time()
+    
+    if last_total_score is None:
+        last_total_score = current_total_score
+        last_score_change_time = current_time
+        return True  # Start as idle
+    
+    if current_total_score != last_total_score:
+        last_total_score = current_total_score
+        last_score_change_time = current_time
+        return False  # Not idle when score changes
+    
+    idle_time = current_time - last_score_change_time
+    return idle_time >= IDLE_THRESHOLD
+
 def calculate_projected_avg(total_score, current_rate_per_hour, epoch_start, epoch_end, final_total_ids=676):
     now = datetime.now(timezone.utc)
     time_left_hours = (epoch_end - now).total_seconds() / 3600
@@ -38,30 +62,20 @@ def calculate_projected_avg(total_score, current_rate_per_hour, epoch_start, epo
     projected_avg = final_total_score / final_total_ids
     return projected_avg, time_left_hours
 
-def calculate_safe_id_count(your_total_rate, network_rate, your_lowest_rank):
-    network_avg_rate = network_rate / 676
-    your_avg_rate = your_total_rate / len(YOUR_IDS)
-    performance_ratio = your_avg_rate / network_avg_rate
+def calculate_safe_id_count(active_ids, network_average_score, total_ids=676):
+    if not active_ids:
+        return {}
     
-    base_safe_count = min(performance_ratio * 500, len(YOUR_IDS))
+    total_score = sum(score for _, _, score, _ in active_ids)
+    possible_ids = int(total_score / network_average_score)
     
-    safety_margins = {
-        "20% Safety Margin": 0.8,
-        "10% Safety Margin": 0.90,
-        "0% Safety Margin": 1,
+    recommendations = {
+        "Conservative (Safe)": possible_ids,
+        "Moderate": possible_ids if total_score < (possible_ids + 1) * network_average_score + 20 else possible_ids + 1,
+        "Aggressive": possible_ids if total_score < (possible_ids + 1) * network_average_score else possible_ids + 1
     }
     
-    safe_counts = {}
-    for margin_name, margin in safety_margins.items():
-        if your_lowest_rank > 450:
-            safe_count = max(1, base_safe_count * 0.5 * margin)
-        elif your_lowest_rank > 250:
-            safe_count = base_safe_count * 0.8 * margin
-        else:
-            safe_count = base_safe_count * margin
-        safe_counts[margin_name] = round(safe_count)
-    
-    return safe_counts
+    return recommendations
 
 def fetch_scores():
     rBody = {'userName': 'guest@qubic.li', 'password': 'guest13@Qubic.li', 'twoFactorCode': ''}
@@ -88,46 +102,58 @@ def fetch_scores():
 
                 rank = 1
                 total_ids = len(s)
-                computors_count = 0
-                candidates_count = 0
+                
+                computors_count = sum(1 for comp in s if comp.get('isComputor', False))
+                candidates_count = sum(1 for comp in s if not comp.get('isComputor', False))
 
                 total_score = sum(comp['adminScore'] for comp in s if 'adminScore' in comp)
+                
+                # Check idle status
+                is_idle = check_idle_status(total_score)
+                idle_status = f"{Fore.GREEN}ON" if is_idle else f"{Fore.RED}OFF"
 
                 max_score = max(comp['score'] for comp in s) if s else 0
                 average_score = sum(comp['score'] for comp in s) / total_ids if total_ids > 0 else 0
 
                 epoch_start, epoch_end = get_epoch_times()
+                now = datetime.now(timezone.utc)
+                time_elapsed = (now - epoch_start).total_seconds() / 3600
+                time_left_hours = (epoch_end - now).total_seconds() / 3600
 
-                projected_avg, time_left_hours = calculate_projected_avg(
+                projected_avg, _ = calculate_projected_avg(
                     total_score, current_rate_per_hour, epoch_start, epoch_end, final_total_ids=676
                 )
 
-                # Logging key statistics
                 logging.info(f"Total Score: {total_score}, Current Solution Rate: {current_rate_per_hour}, Projected Average: {projected_avg}")
                 
-                your_total_rate = 0
-                your_scores = []
-                your_lowest_rank = 0
+                your_active_ids = []
                 
                 print(Fore.CYAN + Style.BRIGHT + r"""                            
 
-                (        ) (      (               )     )            )               )     (    
-           *   ))\ )  ( /( )\ )   )\ )   (     ( /(  ( /(     (   ( /(       (    ( /(     )\ ) 
-   (  (  ` )  /(()/(  )\()(()/(  (()/(   )\    )\()) )\())    )\  )\())(     )\   )\())(  (()/( 
-   )\ )\  ( )(_)/(_)|((_)\ /(_))  /(_)((((_)( ((_)\|((_)\   (((_)((_)\ )\  (((_)|((_)\ )\  /(_))
-  ((_((_)(_(_()(_)) |_ ((_(_))   (_))  )\ _ )\ _((_|_ ((_)  )\___ _((_((_) )\___|_ ((_((_)(_))  
- _ | | __|_   _/ __|| |/ /|_ _|  | _ \ (_)_\(_| \| | |/ /  ((/ __| || | __((/ __| |/ /| __| _ \ 
-| || | _|  | | \__ \  ' <  | |   |   /  / _ \ | .` | ' <    | (__| __ | _| | (__  ' < | _||   / 
- \__/|___| |_| |___/ _|\_\|___|  |_|_\ /_/ \_\|_|\_|_|\_\    \___|_||_|___| \___|_|\_\|___|_|_\                           
+     ▄█    ▄████████     ███        ▄████████    ▄█   ▄█▄  ▄█          ▄███████▄  ▄██████▄   ▄██████▄   ▄█       
+    ███   ███    ███ ▀█████████▄   ███    ███   ███ ▄███▀ ███         ███    ███ ███    ███ ███    ███ ███       
+    ███   ███    █▀     ▀███▀▀██   ███    █▀    ███▐██▀   ███▌        ███    ███ ███    ███ ███    ███ ███       
+    ███  ▄███▄▄▄         ███   ▀   ███         ▄█████▀    ███▌        ███    ███ ███    ███ ███    ███ ███       
+    ███ ▀▀███▀▀▀         ███     ▀███████████ ▀▀█████▄    ███▌      ▀█████████▀  ███    ███ ███    ███ ███       
+    ███   ███    █▄      ███              ███   ███▐██▄   ███         ███        ███    ███ ███    ███ ███       
+    ███   ███    ███     ███        ▄█    ███   ███ ▀███▄ ███         ███        ███    ███ ███    ███ ███▌    ▄ 
+█▄ ▄███   ██████████    ▄████▀    ▄████████▀    ███   ▀█▀ █▀         ▄████▀       ▀██████▀   ▀██████▀  █████▄▄██ 
+▀▀▀▀▀▀                                          ▀                                                      ▀         
+                          
                 """ + "="*60)
                 
                 print(Fore.YELLOW + f"\nCurrent Network Solution Rate: {current_rate_per_hour:.2f}/hour")
                 print(Fore.YELLOW + f"Time Left in Epoch: {time_left_hours:.2f} hours")
-                print(Fore.YELLOW + f"Estimated Solution Rate for 1 ID: {current_rate_per_hour / 676:.2f}/hour\n")
+                print(Fore.YELLOW + f"Time Elapsed in Epoch: {time_elapsed:.2f} hours")
+                print(Fore.YELLOW + f"Estimated Solution Rate for 1 ID: {current_rate_per_hour / 676:.2f}/hour")
+                print(Fore.WHITE + f"IDLE: {idle_status}\n")
                 
-                print(Fore.CYAN + "Your IDs Performance:")
+                print(Fore.CYAN + "Your Active IDs Performance:")
                 for comp in s:
-                    if comp['identity'] in YOUR_IDS:
+                    if comp['identity'] in YOUR_IDS and comp['score'] > 0:
+                        score = comp['score']
+                        rate = score / time_elapsed if time_elapsed > 0 else 0
+                        
                         if rank > 450:
                             color = Fore.RED + Style.BRIGHT
                             danger_message = Fore.RED + Style.BRIGHT + "DANGER! LOW RANK"
@@ -139,23 +165,41 @@ def fetch_scores():
                             danger_message = Fore.GREEN + "Healthy Rank"
 
                         print(color + f"ID: {Fore.LIGHTCYAN_EX}{comp['identity']}")
-                        print(f"Rank: {rank} | Score: {comp['score']} | {danger_message}")
-                        rate = comp['score'] / time_left_hours
+                        print(f"Rank: {rank} | Score: {score} | {danger_message}")
+                        print(f"Computor Status: {'Yes' if comp.get('isComputor', False) else 'No'}")
                         print(f"Estimated Solution Rate: {rate:.2f}/h")
                         print(Fore.BLUE + "-"*60)
                         
-                        your_total_rate += rate
-                        your_scores.append((comp['identity'], rank, comp['score'], rate))
-                        your_lowest_rank = max(your_lowest_rank, rank)
-
-                    if rank <= 500:
-                        computors_count += 1
-                    else:
-                        candidates_count += 1
+                        your_active_ids.append((comp['identity'], rank, score, rate))
 
                     rank += 1
 
-                print(Fore.CYAN + f"\nTotal IDs: {total_ids}")
+                if your_active_ids:
+                    active_ranks = [rank for _, rank, _, _ in your_active_ids]
+                    print(Fore.CYAN + "\nActive IDs Analysis:")
+                    print(f"Total Active IDs: {len(your_active_ids)}")
+                    print(f"Best Rank: {min(active_ranks)}")
+                    print(f"Worst Rank: {max(active_ranks)}")
+                    print(f"Average Rank: {sum(active_ranks) / len(active_ranks):.0f}")
+                    
+                    total_your_score = sum(score for _, _, score, _ in your_active_ids)
+                    avg_your_score = total_your_score / len(your_active_ids)
+                    print(f"Total Score: {total_your_score}")
+                    print(f"Average Score: {avg_your_score:.2f}")
+                    
+                    safe_id_counts = calculate_safe_id_count(your_active_ids, average_score)
+                    
+                    print(Fore.MAGENTA + "\nRecommended number of IDs to run:")
+                    for strategy, count in safe_id_counts.items():
+                        if strategy == "Conservative (Safe)":
+                            print(Fore.GREEN + f"{strategy}: {count} IDs")
+                        elif strategy == "Moderate":
+                            print(Fore.YELLOW + f"{strategy}: {count} IDs")
+                        else:
+                            print(Fore.RED + f"{strategy}: {count} IDs")
+
+                print(Fore.CYAN + f"\nNetwork Statistics:")
+                print(Fore.CYAN + f"Total IDs: {total_ids}")
                 print(Fore.GREEN + f"Computors: {computors_count}")
                 print(Fore.YELLOW + f"Candidates: {candidates_count}")
                 print(Fore.MAGENTA + f"Maximum Score: {max_score}")
@@ -165,15 +209,9 @@ def fetch_scores():
                 print(Fore.LIGHTMAGENTA_EX + f"Time Left in Epoch (hours): {time_left_hours:.2f}")
                 print(Fore.LIGHTMAGENTA_EX + f"Total Score: {total_score}")
                 
-                print(Fore.GREEN + f"\nYour Total Estimated Solution Rate: {your_total_rate:.2f}/hour")
-                
-                safe_id_counts = calculate_safe_id_count(your_total_rate, current_rate_per_hour, your_lowest_rank)
-                print(Fore.MAGENTA + "\nRecommended number of IDs to run:")
-                for margin, count in safe_id_counts.items():
-                    print(f"{margin}: {count}")
-                
-                if min(safe_id_counts.values()) < len(YOUR_IDS):
-                    print(Fore.YELLOW + "\nConsider running your top performing IDs only.")
+                if your_active_ids:
+                    your_total_rate = sum(rate for _, _, _, rate in your_active_ids)
+                    print(Fore.GREEN + f"\nYour Total Estimated Solution Rate: {your_total_rate:.2f}/hour")
                 
                 print(Fore.BLUE + "="*60)
 
@@ -199,12 +237,12 @@ def main():
     while True:
         try:
             fetch_scores()
-            print(Fore.LIGHTBLUE_EX + "\nNext update in 10 minutes... ⏳\n" + "="*60)
-            time.sleep(600)  # Sleep for 10 minutes before the next run
+            print(Fore.LIGHTBLUE_EX + "\nNext update in 5 minutes... ⏳\n" + "="*60)
+            time.sleep(300)  # 5 minutes
         except KeyboardInterrupt:
             print(Fore.RED + "Process interrupted. Exiting...")
             logging.info("Process interrupted by user.")
-            sys.exit(0)  # Gracefully handle keyboard interruptions
+            sys.exit(0)
         except Exception as e:
             logging.error(f"An error occurred in the main loop: {e}")
             print(Fore.RED + f"An error occurred: {e}")
