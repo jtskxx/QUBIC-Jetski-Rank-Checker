@@ -15,12 +15,10 @@ YOUR_IDS = [
     'ID2',
     'ID3',
     'ID4',
-    'ID5',
-    'ID6',
-    'ID7'
+
 ]
 
-# Add global variables for idle detection
+# Add global variables for idle detection (Approx Detection with lag due to API 20mins interval refresh)
 last_total_score = None
 last_score_change_time = None
 IDLE_THRESHOLD = 25 * 60  # 25 minutes in seconds
